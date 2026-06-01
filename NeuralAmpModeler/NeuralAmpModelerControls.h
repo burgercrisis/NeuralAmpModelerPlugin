@@ -1082,3 +1082,45 @@ private:
     IText mText;
   };
 };
+
+// =============================================================================
+// ModelKnobControl
+// =============================================================================
+// Standard IVKnobControl-based knob for multi-knob model parameters.
+// Uses real param indices (kModelKnob0..kModelKnob7) so it gets full iPlug2
+// parameter integration for free: serialization, automation, MIDI learn, etc.
+//
+// Created dynamically in _UpdateModelKnobUI() when a multi-knob model is loaded.
+// =============================================================================
+
+class ModelKnobControl : public IVKnobControl, public IBitmapBase
+{
+public:
+   ModelKnobControl(const IRECT& bounds, int paramIdx, const char* label, const IVStyle& style, IBitmap bitmap)
+   : IVKnobControl(bounds, paramIdx, label, style, true)
+   , IBitmapBase(bitmap)
+   {
+      mInnerPointerFrac = 0.55;
+   }
+
+   void OnRescale() override { mBitmap = GetUI()->GetScaledBitmap(mBitmap); }
+
+   void DrawWidget(IGraphics& g) override
+   {
+      float widgetRadius = GetRadius() * 0.73;
+      auto knobRect = mWidgetBounds.GetCentredInside(mWidgetBounds.W(), mWidgetBounds.W());
+      const float cx = knobRect.MW(), cy = knobRect.MH();
+      const float angle = mAngle1 + (static_cast<float>(GetValue()) * (mAngle2 - mAngle1));
+      DrawIndicatorTrack(g, angle, cx + 0.5, cy, widgetRadius);
+      g.DrawFittedBitmap(mBitmap, knobRect);
+      float data[2][2];
+      RadialPoints(angle, cx, cy, mInnerPointerFrac * widgetRadius, mInnerPointerFrac * widgetRadius, 2, data);
+      g.PathCircle(data[1][0], data[1][1], 3);
+      g.PathFill(IPattern::CreateRadialGradient(data[1][0], data[1][1], 4.0f,
+                                                {{GetColor(mMouseIsOver ? kX3 : kX1), 0.f},
+                                                 {GetColor(mMouseIsOver ? kX3 : kX1), 0.8f},
+                                                 {COLOR_TRANSPARENT, 1.0f}}),
+                 {}, &mBlend);
+      g.DrawCircle(COLOR_BLACK.WithOpacity(0.5f), data[1][0], data[1][1], 3, &mBlend);
+   }
+};

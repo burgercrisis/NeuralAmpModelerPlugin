@@ -14,6 +14,9 @@
 #include "IPlug_include_in_plug_hdr.h"
 #include "ISender.h"
 
+#include <string>
+#include <vector>
+
 
 const int kNumPresets = 1;
 // The plugin is mono inside
@@ -47,10 +50,20 @@ enum EParams
   kInputCalibrationLevel,
   kOutputMode,
   kSlim,
+  // Multi-knob parameters (initialized dynamically; up to 8 slots)
+  kModelKnob0,
+  kModelKnob1,
+  kModelKnob2,
+  kModelKnob3,
+  kModelKnob4,
+  kModelKnob5,
+  kModelKnob6,
+  kModelKnob7,
   kNumParams
 };
 
 const int numKnobs = 6;
+constexpr int kMaxModelKnobs = 8;
 
 enum ECtrlTags
 {
@@ -74,6 +87,7 @@ enum EMsgTags
   kMsgTagClearModel = 0,
   kMsgTagClearIR,
   kMsgTagHighlightColor,
+  kMsgTagModelKnob, // Model knob value changed: data = {knob_index, value}
   // The following tags are from DSP -> UI
   kMsgTagLoadFailed,
   kMsgTagLoadedModel,
@@ -134,7 +148,7 @@ public:
     Reset(expected_sample_rate, maxBlockSize);
   };
 
-  ~ResamplingNAM() = default;
+  void SetExternalInputs(const std::vector<float>& params) override { mEncapsulated->SetExternalInputs(params); }
 
   void prewarm() override { mEncapsulated->prewarm(); };
 
@@ -322,6 +336,24 @@ private:
   WDL_String mHighLightColor{PluginColors::NAM_THEMECOLOR.ToColorCode()};
 
   std::unordered_map<std::string, double> mNAMParams = {{"Input", 0.0}, {"Output", 0.0}};
+
+  // Multi-knob model support
+  struct ModelKnobInfo {
+    std::string name;
+    double minValue;
+    double maxValue;
+    double defaultValue;
+  };
+
+  std::vector<ModelKnobInfo> mModelKnobs;
+  std::vector<float> mModelKnobValues;  // Current knob values (written by UI thread, read by audio thread)
+
+  /// \brief Update model knob values from the stored mModelKnobValues and pass to DSP.
+  /// Called when a model knob value changes (UI thread).
+  void _UpdateExternalInputs();
+
+  /// \brief Rebuild the model knob UI controls after a model is loaded or cleared.
+  void _UpdateModelKnobUI();
 
   NAMSender mInputSender, mOutputSender;
 };

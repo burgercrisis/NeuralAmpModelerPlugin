@@ -357,6 +357,7 @@ void NeuralAmpModeler::ProcessBlock(iplug::sample** inputs, iplug::sample** outp
 
   if (mModel != nullptr)
   {
+    _UpdateExternalInputs();
     mModel->process(triggerOutput, mOutputPointers, nFrames);
   }
   else
@@ -425,6 +426,7 @@ void NeuralAmpModeler::OnIdle()
     if (auto* pGraphics = GetUI())
     {
       _UpdateControlsFromModel();
+      _UpdateModelKnobUI();
       mNewModelLoadedInDSP = false;
     }
   }
@@ -441,9 +443,13 @@ void NeuralAmpModeler::OnIdle()
         p->Hide(true);
       if (auto* p = pGraphics->GetControlWithTag(kCtrlTagSlimKnob))
         p->Hide(true);
+      _UpdateModelKnobUI();
       pGraphics->SetAllControlsDirty();
       mModelCleared = false;
     }
+    // Clear model knobs
+    mModelKnobs.clear();
+    mModelKnobValues.clear();
   }
 }
 
@@ -508,22 +514,25 @@ void NeuralAmpModeler::OnUIOpen()
 
 void NeuralAmpModeler::OnParamChange(int paramIdx)
 {
-  switch (paramIdx)
-  {
-    // Changes to the input gain
-    case kCalibrateInput:
-    case kInputCalibrationLevel:
-    case kInputLevel: _SetInputGain(); break;
-    // Changes to the output gain
-    case kOutputLevel:
-    case kOutputMode: _SetOutputGain(); break;
-    // Tone stack:
-    case kToneBass: mToneStack->SetParam("bass", GetParam(paramIdx)->Value()); break;
-    case kToneMid: mToneStack->SetParam("middle", GetParam(paramIdx)->Value()); break;
-    case kToneTreble: mToneStack->SetParam("treble", GetParam(paramIdx)->Value()); break;
-    case kSlim: _ApplySlimParamToLoadedNAMs(); break;
-    default: break;
-  }
+   switch (paramIdx)
+   {
+     case kCalibrateInput:
+     case kInputCalibrationLevel:
+     case kInputLevel: _SetInputGain(); break;
+     case kOutputLevel:
+     case kOutputMode: _SetOutputGain(); break;
+     case kToneBass: mToneStack->SetParam("bass", GetParam(paramIdx)->Value()); break;
+     case kToneMid: mToneStack->SetParam("middle", GetParam(paramIdx)->Value()); break;
+     case kToneTreble: mToneStack->SetParam("treble", GetParam(paramIdx)->Value()); break;
+     case kSlim: _ApplySlimParamToLoadedNAMs(); break;
+     default:
+       if (paramIdx >= kModelKnob0 && paramIdx < kModelKnob0 + kMaxModelKnobs)
+       {
+         // Model knob changed — push to DSP
+         _UpdateExternalInputs();
+       }
+       break;
+   }
 }
 
 void NeuralAmpModeler::OnParamChangeUI(int paramIdx, EParamSource source)
@@ -620,6 +629,8 @@ void NeuralAmpModeler::_ApplyDSPStaging()
     _UpdateLatency();
     _SetInputGain();
     _SetOutputGain();
+    // Initialize knob values on the new model
+    _UpdateExternalInputs();
   }
   if (mStagedIR != nullptr)
   {
@@ -742,13 +753,112 @@ void NeuralAmpModeler::_ApplySlimParamToLoadedNAMs()
   apply(mStagedModel.get());
 }
 
+void NeuralAmpModeler::_UpdateExternalInputs()
+{
+   if (mModel == nullptr) return;
+
+   // Read current values from model knob IParam objects
+   for (size_t i = 0; i < mModelKnobValues.size(); i++)
+   {
+      int paramIdx = kModelKnob0 + (int)i;
+      if (paramIdx < kNumParams && GetParam(paramIdx) != nullptr)
+         mModelKnobValues[i] = (float)GetParam(paramIdx)->Value();
+   }
+
+   if (!mModelKnobValues.empty())
+   {
+      mModel->SetExternalInputs(mModelKnobValues);
+   }
+}
+
+void NeuralAmpModeler::_UpdateModelKnobUI()
+{
+   auto* pGraphics = GetUI();
+   if (pGraphics == nullptr) return;
+
+   // Remove old model knob controls
+   for (int i = 0; i < kMaxModelKnobs; i++)
+   {
+      int paramIdx = kModelKnob0 + i;
+      // Controls attached with paramIdx are found via GetControlWithParamIdx
+      if (auto* c = pGraphics->GetControlWithParamIdx(paramIdx))
+      {
+         pGraphics->RemoveControl(c);
+      }
+   }
+
+   const size_t numKnobs = mModelKnobs.size();
+   if (numKnobs == 0) return;
+
+   // Limit to available param slots
+   const size_t knobsToShow = std::min(numKnobs, (size_t)kMaxModelKnobs);
+
+   // Layout: place knobs below the main 6-knob row, flowing left-to-right
+   const auto b = pGraphics->GetBounds();
+   const auto mainArea = b.GetPadded(-20);
+   const auto contentArea = mainArea.GetPadded(-10);
+   const float titleHeight = 50.0f;
+   const float knobW = 80.0f;
+   const float knobH = 100.0f;
+   const float padX = 8.0f;
+   const float padY = 8.0f;
+   // Place below the existing knobs (which are at NAM_KNOB_HEIGHT + title offset)
+   const float startY = titleHeight + NAM_KNOB_HEIGHT + 40.0f;
+
+   const float availableW = contentArea.W();
+   const int knobsPerRow = std::max(1, (int)((availableW + padX) / (knobW + padX)));
+
+    const IBitmap knobBitmap = pGraphics->LoadBitmap(KNOBBACKGROUND_FN);
+
+    for (size_t i = 0; i < knobsToShow; i++)
+   {
+      const int paramIdx = kModelKnob0 + (int)i;
+      const int row = (int)i / knobsPerRow;
+      const int col = (int)i % knobsPerRow;
+      const float x = contentArea.L + col * (knobW + padX);
+      const float y = contentArea.T + startY + row * (knobH + padY);
+
+      IRECT bounds(x, y, x + knobW, y + knobH);
+
+      // Init the param if not already done
+      if (GetParam(paramIdx) != nullptr)
+      {
+         double minVal = mModelKnobs[i].minValue;
+         double maxVal = mModelKnobs[i].maxValue;
+         double defaultVal = mModelKnobs[i].defaultValue;
+         double range = maxVal - minVal;
+         double step = range > 0 ? range / 100.0 : 0.01;
+         GetParam(paramIdx)->InitDouble(mModelKnobs[i].name.c_str(), defaultVal,
+                                        minVal, maxVal, step);
+      }
+
+      auto* knob = new ModelKnobControl(bounds, paramIdx, "", style, knobBitmap);
+      pGraphics->AttachControl(knob);
+      mModelKnobValues[i] = (float)GetParam(paramIdx)->Value();
+   }
+
+   // Initialize remaining hidden knobs to defaults
+   for (size_t i = knobsToShow; i < numKnobs; i++)
+   {
+      mModelKnobValues[i] = (float)mModelKnobs[i].defaultValue;
+   }
+
+   _UpdateExternalInputs();
+   pGraphics->SetAllControlsDirty();
+}
+
+// (OnParamChange handles model knob changes directly)
+
 std::string NeuralAmpModeler::_StageModel(const WDL_String& modelPath)
 {
   WDL_String previousNAMPath = mNAMPath;
   try
   {
     auto dspPath = std::filesystem::u8path(modelPath.Get());
-    std::unique_ptr<nam::DSP> model = nam::get_dsp(dspPath);
+
+    // Use the overload that returns raw config so we can inspect knob metadata
+    nam::dspData dspData;
+    std::unique_ptr<nam::DSP> model = nam::get_dsp(dspPath, dspData);
 
     // Check that the model has 1 input and 1 output channel
     if (model->NumInputChannels() != 1)
@@ -759,6 +869,52 @@ std::string NeuralAmpModeler::_StageModel(const WDL_String& modelPath)
     {
       throw std::runtime_error("Model must have 1 output channel, but has "
                                + std::to_string(model->NumOutputChannels()));
+    }
+
+    // Parse multi-knob metadata from the .nam config
+    mModelKnobs.clear();
+    mModelKnobValues.clear();
+    {
+      const auto& config = dspData.config;
+      if (config.contains("condition_dsp") && !config["condition_dsp"].is_null())
+      {
+        const auto& cdsp = config["condition_dsp"];
+        if (cdsp.contains("architecture") && cdsp["architecture"] == "KnobConditioning")
+        {
+          // Parse knob_metadata from top-level config
+          if (config.contains("knob_metadata"))
+          {
+            for (auto& [name, meta] : config["knob_metadata"].items())
+            {
+              ModelKnobInfo info;
+              info.name = name;
+              info.minValue = meta.value("min_value", 0.0);
+              info.maxValue = meta.value("max_value", 1.0);
+              info.defaultValue = meta.value("default_value", 0.5);
+              mModelKnobs.push_back(info);
+            }
+          }
+          else
+          {
+            // Fallback: extract from condition_dsp config
+            const auto& kn = cdsp["config"]["knob_names"];
+            for (const auto& name : kn)
+            {
+              ModelKnobInfo info;
+              info.name = name.get<std::string>();
+              info.minValue = 0.0;
+              info.maxValue = 1.0;
+              info.defaultValue = 0.5;
+              mModelKnobs.push_back(info);
+            }
+          }
+
+          // Initialize knob values to defaults
+          mModelKnobValues.resize(mModelKnobs.size());
+          for (size_t i = 0; i < mModelKnobs.size(); i++)
+            mModelKnobValues[i] = (float)mModelKnobs[i].defaultValue;
+        }
+      }
     }
 
     std::unique_ptr<ResamplingNAM> temp = std::make_unique<ResamplingNAM>(std::move(model), GetSampleRate());
