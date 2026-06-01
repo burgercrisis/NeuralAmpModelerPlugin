@@ -16,3 +16,4 @@ NeuralAmpModeler/peaks/
 nam_player/model/__pycache__/
 nam_player/__pycache__/
 nam_player/ui/__pycache__/
+nam_player/audio/__pycache__/
